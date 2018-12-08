@@ -25,7 +25,6 @@ class MultiheadAttention(tf.keras.models.Model):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.head_num = head_num
-        self.dropout_rate = dropout_rate
         self.is_train = is_train
 
         self.q_dense_layer = tf.keras.layers.Dense(hidden_dim, use_bias=False, name='q_dense_layer')
@@ -38,7 +37,7 @@ class MultiheadAttention(tf.keras.models.Model):
             self,
             input: tf.Tensor,
             memory: tf.Tensor,
-            attention_mask: tf.Tensor,
+            bias: tf.Tensor,
             cache: Optional[Dict[str, tf.Tensor]] = None,
     ) -> tf.Tensor:
         '''
@@ -73,7 +72,7 @@ class MultiheadAttention(tf.keras.models.Model):
         q *= depth ** -0.5  # for scaled dot production
 
         logit = tf.matmul(q, k, transpose_b=True)  # [batch_size, head_num, q_length, k_length]
-        logit += tf.to_float(attention_mask) * input.dtype.min  # mask は pad 部分などが1, 他は0
+        logit += bias
 
         attention_weight = tf.nn.softmax(logit, name='attention_weight')
         attention_weight = self.attention_dropout_layer(attention_weight, training=self.is_train)
@@ -113,12 +112,12 @@ class SelfAttention(MultiheadAttention):
     def call(  # type: ignore
             self,
             input: tf.Tensor,
-            attention_mask: tf.Tensor,
+            bias: tf.Tensor,
             cache: Optional[Dict[str, tf.Tensor]] = None,
     ) -> tf.Tensor:
         return super().call(
             input=input,
             memory=input,
-            attention_mask=attention_mask,
+            bias=bias,
             cache=cache,
         )

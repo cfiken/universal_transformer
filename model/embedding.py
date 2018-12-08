@@ -11,7 +11,7 @@ class EmbeddingSharedWeights(tf.keras.layers.Layer):
         self.shared_weights = self.add_variable(
             name='embedding_shared_weights',
             shape=[self.vocab_size, self.hidden_size],
-            initializer=tf.random_normal_initializer(0, self.hidden_size ** -0.5),
+            initializer=tf.contrib.layers.xavier_initializer()
         )
 
     def call(self, x: tf.Tensor) -> tf.Tensor:
@@ -56,22 +56,3 @@ class AddLearnedPositionEmbedding(tf.keras.layers.Layer):
         mask_value_tensor = tf.zeros_like(input)  # [batch_size, actual_length, hidden_dim]
 
         return input + tf.where(mask, mask_value_tensor, cut_position_embedding)
-
-
-class AddLearnedSegmentEmbedding(tf.keras.layers.Layer):
-    def __init__(self, max_segment_num: int, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.max_segment_num = max_segment_num
-
-    def build(self, input_shape: tf.TensorShape) -> None:
-        hidden_dim = int(input_shape[-1])
-        self.segment_embedding = self.add_variable('segment_embedding', [self.max_segment_num, hidden_dim])
-
-    def call(self, input: tf.Tensor, segment_mask: tf.Tensor) -> tf.Tensor:
-        hidden_dim = tf.unstack(tf.shape(input))[-1]
-
-        # sentence_embedding: [max_segment_num, hidden_dim]
-        pad = tf.zeros(shape=[1, hidden_dim], dtype=input.dtype)
-        # [max_segment_num + 1, hidden_dim]
-        embedding_table = tf.concat([pad, self.segment_embedding], axis=0)
-        return input + tf.gather(embedding_table, segment_mask + 1)  # +1: pad shift

@@ -17,7 +17,7 @@ class LayerWrapper(tf.keras.Model):
         y = self.layer(y, *args, **kwargs)
 
         # dropout
-        if self.train:
+        if self.is_train:
             y = self.postprocess_dropout(y)
         # residual
         y = x + y
