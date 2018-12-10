@@ -3,7 +3,7 @@ import tensorflow as tf
 
 class EmbeddingSharedWeights(tf.keras.layers.Layer):
     def __init__(self, vocab_size: int, hidden_size: int):
-        super().__init__()
+        super(EmbeddingSharedWeights, self).__init__()
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
 
@@ -11,6 +11,7 @@ class EmbeddingSharedWeights(tf.keras.layers.Layer):
         self.shared_weights = self.add_variable(
             name='embedding_shared_weights',
             shape=[self.vocab_size, self.hidden_size],
+            dtype=tf.float32,
             initializer=tf.contrib.layers.xavier_initializer()
         )
 
@@ -24,8 +25,8 @@ class EmbeddingSharedWeights(tf.keras.layers.Layer):
         return embeddings
 
     def linear(self, x: tf.Tensor) -> tf.Tensor:
-        batch_size = x.shape[0]
-        length = x.shape[1]
+        batch_size = tf.shape(x)[0]
+        length = tf.shape(x)[1]
 
         x = tf.reshape(x, [-1, self.hidden_size])
         logits = tf.matmul(x, self.shared_weights, transpose_b=True)

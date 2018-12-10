@@ -22,7 +22,7 @@ class MultiheadAttention(tf.keras.models.Model):
         :param head_num: ヘッドの数
         :param dropout_rate: ドロップアウトする確率
         '''
-        super().__init__()
+        super(MultiheadAttention, self).__init__()
         self.hidden_dim = hidden_dim
         self.head_num = head_num
         self.is_train = is_train
