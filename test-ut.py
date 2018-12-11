@@ -40,7 +40,7 @@ tf.enable_eager_execution()
 
 hparams = AttrDict()
 hparams.num_layers = 4
-hparams.num_units = 1024
+hparams.num_units = 2048
 hparams.num_filter_units = hparams.num_units * 4
 hparams.num_heads = 8
 hparams.dropout_rate = 0.1
@@ -48,15 +48,15 @@ hparams.max_length = 50
 hparams.batch_size = 64
 hparams.learning_rate = 0.001
 hparams.warmup_steps = 4000
-hparams.num_epochs = 20
+hparams.num_epochs = 30
 hparams.vocab_size = 3278
 hparams.data_path = './data/'
-hparams.ckpt_path = './ckpt/vanilla/l{}_u{}/model.ckpt'.format(hparams.num_layers, hparams.num_units)
-hparams.log_dir = './logs/vanilla/l{}_u{}'.format(hparams.num_layers, hparams.num_units)
+hparams.ckpt_path = './ckpt/ut/l{}_u{}/model.ckpt'.format(hparams.num_layers, hparams.num_units)
+hparams.log_dir = './logs/ut/l{}_u{}'.format(hparams.num_layers, hparams.num_units)
 hparams1 = hparams
 
 hparams2 = AttrDict()
-hparams2.num_layers = 6
+hparams2.num_layers = 4
 hparams2.num_units = 1024
 hparams2.num_filter_units = hparams2.num_units * 4
 hparams2.num_heads = 8
@@ -65,15 +65,15 @@ hparams2.max_length = 50
 hparams2.batch_size = 64
 hparams2.learning_rate = 0.001
 hparams2.warmup_steps = 4000
-hparams2.num_epochs = 20
+hparams2.num_epochs = 30
 hparams2.vocab_size = 3278
 hparams2.data_path = './data/'
-hparams2.ckpt_path = './ckpt/vanilla/l{}_u{}/model.ckpt'.format(hparams2.num_layers, hparams2.num_units)
-hparams2.log_dir = './logs/vanilla/l{}_u{}'.format(hparams2.num_layers, hparams2.num_units)
+hparams2.ckpt_path = './ckpt/ut/l{}_u{}/model.ckpt'.format(hparams2.num_layers, hparams2.num_units)
+hparams2.log_dir = './logs/ut/l{}_u{}'.format(hparams2.num_layers, hparams2.num_units)
 
 hparams3 = AttrDict()
-hparams3.num_layers = 4
-hparams3.num_units = 2048
+hparams3.num_layers = 1
+hparams3.num_units = 1024
 hparams3.num_filter_units = hparams3.num_units * 4
 hparams3.num_heads = 8
 hparams3.dropout_rate = 0.1
@@ -84,8 +84,8 @@ hparams3.warmup_steps = 4000
 hparams3.num_epochs = 20
 hparams3.vocab_size = 3278
 hparams3.data_path = './data/'
-hparams3.ckpt_path = './ckpt/vanilla/l{}_u{}/model.ckpt'.format(hparams3.num_layers, hparams3.num_units)
-hparams3.log_dir = './logs/vanilla/l{}_u{}'.format(hparams3.num_layers, hparams3.num_units)
+hparams3.ckpt_path = './ckpt/ut/l{}_u{}/model.ckpt'.format(hparams3.num_layers, hparams3.num_units)
+hparams3.log_dir = './logs/ut/l{}_u{}'.format(hparams3.num_layers, hparams3.num_units)
 
 ds = SampleDataSource(hparams)
 
@@ -197,7 +197,6 @@ class UniversalTransformer(tf.keras.Model):
         
     def _encode(self, inputs, attention_bias):
         embedded_inputs = self.embedding_layer(inputs)
-        embedded_inputs += model_utils.get_position_encoding(self.hparams['max_length'], self.hparams['num_units'])
         inputs_padding = model_utils.get_padding(inputs)
 
         if self.is_train:
@@ -229,6 +228,7 @@ class EncoderStack(tf.keras.Model):
     
     def __init__(self, hparams, is_train):
         super(EncoderStack, self).__init__()
+        self.hparams = hparams
         self.num_layers = hparams['num_layers']
         
         self_attention_layer = SelfAttention(hparams['num_units'], hparams['num_heads'], hparams['dropout_rate'], is_train)
@@ -240,6 +240,8 @@ class EncoderStack(tf.keras.Model):
     
     def call(self, encoder_inputs, attention_bias, inputs_padding):
         for l in range(self.num_layers):
+            encoder_inputs += model_utils.get_position_encoding(self.hparams['max_length'], self.hparams['num_units'])
+            encoder_inputs += model_utils.get_timestep_encoding(l, self.num_layers, self.hparams['num_units'])
             encoder_inputs = self.self_attention_wrapper(encoder_inputs, attention_bias)
             encoder_inputs = self.ffn_wrapper(encoder_inputs, inputs_padding)
             
@@ -250,7 +252,7 @@ class DecoderStack(tf.keras.Model):
     def __init__(self, hparams, is_train):
         super(DecoderStack, self).__init__()
         self.my_layers = []
-        
+        self.hparams = hparams
         self.num_layers = hparams['num_layers']
         self_attention_layer = SelfAttention(hparams['num_units'], hparams['num_heads'], hparams['dropout_rate'], is_train)
         enc_dec_attention_layer = MultiheadAttention(hparams['num_units'], hparams['num_heads'], hparams['dropout_rate'], is_train)
@@ -263,6 +265,8 @@ class DecoderStack(tf.keras.Model):
     
     def call(self, decoder_inputs, encoder_outputs, decoder_self_attention_bias, attention_bias):
         for l in range(self.num_layers):
+            decoder_inputs += model_utils.get_position_encoding(self.hparams['max_length'], self.hparams['num_units'])
+            decoder_inputs += model_utils.get_timestep_encoding(l, self.num_layers, self.hparams['num_units'])
             decoder_inputs = self.self_attention_wrapper(decoder_inputs, decoder_self_attention_bias)
             decoder_inputs = self.enc_dec_attention_wrapper(decoder_inputs, encoder_outputs, attention_bias)
             decoder_inputs = self.ffn_wrapper(decoder_inputs)
@@ -336,16 +340,13 @@ def worker_graph(hparams, gpu_id):
                     model.save(optimizer)
                     print('{} epoch finished. now {} step, loss: {:.4f}, acc: {:.4f}'.format(e, step, loss ,acc))
 
-process_0 = Process(target=worker,args=(hparams1, 1))
-process_1 = Process(target=worker,args=(hparams2, 2))
-process_2 = Process(target=worker,args=(hparams3, 3))
+process_0 = Process(target=worker,args=(hparams1, 3))
 
 process_0.start()
 
+process_1 = Process(target=worker,args=(hparams2, 2))
 process_1.start()
 
-process_2.start()
-
-
+worker(hparams1, 1)
 
 

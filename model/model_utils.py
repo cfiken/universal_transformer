@@ -54,6 +54,21 @@ def get_position_encoding(
   return signal
 
 
+def get_timestep_encoding(step: int, num_steps: int, hidden_size: int):
+  """
+  Args:
+    step: step at now.
+    num_steps: size of layers.
+    hidden_size: Size of the hidden units
+
+  Returns:
+    Tensor with shape [1, hidden_size]
+  """
+  signal = get_position_encoding(num_steps, hidden_size)
+  signal = tf.expand_dims(signal[step, :], axis=0)
+  return signal
+
+
 def get_decoder_self_attention_bias(length):
   """Calculate bias for decoder that maintains model's autoregressive property.
 
