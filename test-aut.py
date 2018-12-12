@@ -39,20 +39,23 @@ from datasource.sample_ds import SampleDataSource
 tf.enable_eager_execution()
 
 hparams = AttrDict()
-hparams.num_layers = 4
-hparams.num_units = 1024
+#hparams.num_layers = 4
+hparams.num_units = 256
 hparams.num_filter_units = hparams.num_units * 4
 hparams.num_heads = 8
 hparams.dropout_rate = 0.1
 hparams.max_length = 50
-hparams.batch_size = 64
+hparams.batch_size = 32
 hparams.learning_rate = 0.001
 hparams.warmup_steps = 4000
-hparams.num_epochs = 30
+hparams.num_epochs = 2
 hparams.vocab_size = 3278
 hparams.data_path = './data/'
-hparams.ckpt_path = './ckpt/vanilla/l{}_u{}/model.ckpt'.format(hparams.num_layers, hparams.num_units)
-hparams.log_dir = './logs/vanilla/l{}_u{}'.format(hparams.num_layers, hparams.num_units)
+hparams.ckpt_path = './ckpt/aut/u{}/model.ckpt'.format(hparams.num_units)
+hparams.log_dir = './logs/aut/u{}_2'.format(hparams.num_units)
+hparams.act_max_step = 20
+hparams.act_epsilon = 0.01
+hparams.act_loss_weight = 0.01
 hparams1 = hparams
 
 hparams2 = AttrDict()
@@ -106,15 +109,20 @@ class UniversalTransformer(tf.keras.Model):
     
     def call(self, inputs, targets: Optional[np.ndarray] = None):
         attention_bias = model_utils.get_padding_bias(inputs)
-        encoder_outputs = self._encode(inputs, attention_bias)
-        
+        encoder_outputs, enc_ponders, enc_remainders = self._encode(inputs, attention_bias)
+        logits, dec_ponders, dec_remainders = self._decode(encoder_outputs, targets, attention_bias)
+
         if targets is None:
-            logits = self._decode(encoder_outputs, targets, attention_bias)
-            #raise Exception()
-            return logits #self.predict(encoder_outputs, attention_bias)
-        else:
-            logits = self._decode(encoder_outputs, targets, attention_bias)
-            return logits
+            raise Exception()
+        enc_act_loss = tf.reduce_mean(enc_ponders + enc_remainders)
+        dec_act_loss = tf.reduce_mean(dec_ponders + dec_remainders)
+        act_loss = self.hparams['act_loss_weight'] * (enc_act_loss + dec_act_loss)
+        if self.is_train:
+            with tf.contrib.summary.record_summaries_every_n_global_steps(10):
+                tf.contrib.summary.scalar('summary/ponder_times_enc', tf.reduce_mean(enc_ponders))
+                tf.contrib.summary.scalar('summary/ponder_times_dec', tf.reduce_mean(dec_ponders))
+            
+        return logits, act_loss
         
     def build_graph(self):
         with tf.name_scope('graph'):
@@ -147,16 +155,19 @@ class UniversalTransformer(tf.keras.Model):
     def loss(self, inputs, targets):
         pad = tf.to_float(tf.not_equal(targets, 0))
         onehot_targets = tf.one_hot(targets, self.hparams['vocab_size'])
-        logits = self(inputs, targets)
+        logits, act_loss = self(inputs, targets)
         cross_ents = tf.losses.softmax_cross_entropy(
             onehot_labels=onehot_targets,
             logits=logits
         )
         loss = tf.reduce_sum(cross_ents * pad) / tf.reduce_sum(pad)
-        return loss
+        with tf.contrib.summary.record_summaries_every_n_global_steps(10):
+            tf.contrib.summary.scalar('summary/target_loss', loss)
+            tf.contrib.summary.scalar('summary/act_loss', act_loss)
+        return loss + act_loss
     
     def acc(self, inputs, targets):
-        logits = self(inputs, targets)
+        logits, _ = self(inputs, targets)
         predicted_ids = tf.to_int32(tf.argmax(logits, axis=2))
         correct = tf.equal(predicted_ids, targets)
         pad = tf.to_float(tf.not_equal(targets, 0))
@@ -214,9 +225,9 @@ class UniversalTransformer(tf.keras.Model):
             decoder_inputs = self.decoder_embedding_dropout(decoder_inputs)
 
         decoder_self_attention_bias = model_utils.get_decoder_self_attention_bias(length)
-        outputs = self.decoder_stack(decoder_inputs, encoder_outputs, decoder_self_attention_bias, attention_bias)
+        outputs, dec_ponders, dec_remainders = self.decoder_stack(decoder_inputs, encoder_outputs, decoder_self_attention_bias, attention_bias)
         logits = self.embedding_layer.linear(outputs)
-        return logits
+        return logits, dec_ponders, dec_remainders
     
     def learning_rate(self):
         step = tf.to_float(self.global_step)
@@ -224,28 +235,93 @@ class UniversalTransformer(tf.keras.Model):
         return rate
 
 
+class ACT(tf.keras.Model):
+    
+    def __init__(self, batch_size, length, hidden_size):
+        super(ACT, self).__init__()
+        
+        self.halting_probability = tf.zeros((batch_size, length), name='halting_probability')
+        self.remainders = tf.zeros((batch_size, length), name="remainder")
+        self.n_updates = tf.zeros((batch_size, length), name="n_updates")
+        
+    def call(self, pondering, halt_threshold):
+        # 今現在まだ計算している symbol だけ取ってくるマスク
+        still_running = tf.cast(tf.less(self.halting_probability, 1.0), tf.float32)
+
+        # 今回の stepondering で停止する symbol のマスク、halt_threshold を超えているかどうかチェックしている
+        new_halted = tf.greater(self.halting_probability + pondering * still_running, halt_threshold)
+        new_halted = tf.cast(new_halted, tf.float32) * still_running
+
+        # ここまででも今回のでも停止しないもののマスク
+        still_running_now = tf.less_equal(self.halting_probability + pondering * still_running, halt_threshold)
+        still_running_now = tf.cast(still_running_now, tf.float32) * still_running
+
+        # まだ停止していない symbol について、停止する確率を更新
+        self.halting_probability += pondering * still_running
+
+        # 今回停止した symbol について、remainder の計算して停止確率を更新
+        self.remainders += new_halted * (1 - self.halting_probability)
+        self.halting_probability += new_halted * self.remainders
+
+        # 今回更新があった symbol について更新回数を足す
+        self.n_updates += still_running + new_halted
+
+        # 新しい state をどれだけ output に入れるかの weights を計算し、shape をあわせる
+        # ここで既に停止している symbol の係数は 0 になるため、値は変わらない
+        update_weights = pondering * still_running + new_halted * self.remainders
+        update_weights = tf.expand_dims(update_weights, -1)
+        
+        return update_weights
+    
+    def should_continue(self, threshold) -> bool:
+        return tf.reduce_any(tf.less(self.halting_probability, threshold))
+
+
 class EncoderStack(tf.keras.Model):
     
     def __init__(self, hparams, is_train):
         super(EncoderStack, self).__init__()
         self.hparams = hparams
-        self.num_layers = hparams['num_layers']
         
         self_attention_layer = SelfAttention(hparams['num_units'], hparams['num_heads'], hparams['dropout_rate'], is_train)
         ffn_layer = FeedForwardNetwork(hparams['num_units'], hparams['num_filter_units'], hparams['dropout_rate'], is_train)
         self.self_attention_wrapper = LayerWrapper(self_attention_layer, hparams['num_units'], hparams['dropout_rate'], is_train)
         self.ffn_wrapper = LayerWrapper(ffn_layer, hparams['num_units'], hparams['dropout_rate'], is_train)
-            
         self.output_norm = LayerNormalization(hparams['num_units'])
+        self.pondering_layer = tf.keras.layers.Dense(1, activation=tf.nn.sigmoid, use_bias=True, bias_initializer=tf.constant_initializer(1.0))
+        
     
     def call(self, encoder_inputs, attention_bias, inputs_padding):
-        for l in range(self.num_layers):
-            encoder_inputs += model_utils.get_position_encoding(self.hparams['max_length'], self.hparams['num_units'])
-            encoder_inputs += model_utils.get_timestep_encoding(l, self.num_layers, self.hparams['num_units'])
-            encoder_inputs = self.self_attention_wrapper(encoder_inputs, attention_bias)
-            encoder_inputs = self.ffn_wrapper(encoder_inputs, inputs_padding)
+        batch_size, length, hidden_size = tf.unstack(tf.shape(encoder_inputs))
+        act = ACT(batch_size, length, hidden_size)
+        halt_threshold = 1.0 - hparams['act_epsilon']
+        
+        state = encoder_inputs
+        previous_state = tf.zeros_like(state, name='previous_state')
+        for step in range(self.hparams['act_max_step']):
+            # 終了条件を確認
+            if not act.should_continue(halt_threshold):
+                break
             
-        return self.output_norm(encoder_inputs)
+            # position & timestep encoding
+            state += model_utils.get_position_encoding(self.hparams['max_length'], hidden_size)
+            state += model_utils.get_timestep_encoding(step, self.hparams['act_max_step'], hidden_size)
+            
+            # pondering 判断のための特徴を計算
+            pondering = self.pondering_layer(state)
+            pondering = tf.squeeze(pondering, axis=-1)
+            
+            # proceed act step
+            update_weights = act(pondering, halt_threshold)
+            
+            state = self.self_attention_wrapper(state, attention_bias)
+            state = self.ffn_wrapper(state, inputs_padding)
+            
+            # ここまでの state と weighted sum を取り、 previous_state を更新
+            new_state = (state * update_weights) + (previous_state * (1 - update_weights))
+            previous_state = new_state
+
+        return self.output_norm(new_state), act.n_updates, act.remainders
 
 class DecoderStack(tf.keras.Model):
     
@@ -253,39 +329,44 @@ class DecoderStack(tf.keras.Model):
         super(DecoderStack, self).__init__()
         self.my_layers = []
         
-        self.num_layers = hparams['num_layers']
+        self.hparams = hparams
         self_attention_layer = SelfAttention(hparams['num_units'], hparams['num_heads'], hparams['dropout_rate'], is_train)
         enc_dec_attention_layer = MultiheadAttention(hparams['num_units'], hparams['num_heads'], hparams['dropout_rate'], is_train)
         ffn_layer = FeedForwardNetwork(hparams['num_units'], hparams['num_filter_units'], hparams['dropout_rate'], is_train)
         self.self_attention_wrapper = LayerWrapper(self_attention_layer, hparams['num_units'], hparams['dropout_rate'], is_train)
         self.enc_dec_attention_wrapper = LayerWrapper(enc_dec_attention_layer, hparams['num_units'], hparams['dropout_rate'], is_train)
         self.ffn_wrapper = LayerWrapper(ffn_layer, hparams['num_units'], hparams['dropout_rate'], is_train)
-            
         self.output_norm = LayerNormalization(hparams['num_units'])
+        self.pondering_layer = tf.keras.layers.Dense(1, activation=tf.nn.sigmoid, use_bias=True, bias_initializer=tf.constant_initializer(1.0))
     
     def call(self, decoder_inputs, encoder_outputs, decoder_self_attention_bias, attention_bias):
-        for l in range(self.num_layers):
-            decoder_inputs += model_utils.get_position_encoding(self.hparams['max_length'], self.hparams['num_units'])
-            decoder_inputs += model_utils.get_timestep_encoding(l, self.num_layers, self.hparams['num_units'])
-            decoder_inputs = self.self_attention_wrapper(decoder_inputs, decoder_self_attention_bias)
-            decoder_inputs = self.enc_dec_attention_wrapper(decoder_inputs, encoder_outputs, attention_bias)
-            decoder_inputs = self.ffn_wrapper(decoder_inputs)
+        batch_size, length, hidden_size = tf.unstack(tf.shape(decoder_inputs))
+        act = ACT(batch_size, length, hidden_size)
+        halt_threshold = 1.0 - hparams['act_epsilon']
+        
+        state = decoder_inputs
+        previous_state = tf.zeros_like(state, name='previous_state')
+        for step in range(self.hparams['act_max_step']):
+            # position and timestep encoding
+            state += model_utils.get_position_encoding(self.hparams['max_length'], hidden_size)
+            state += model_utils.get_timestep_encoding(step, self.hparams['act_max_step'], hidden_size)
             
-        return self.output_norm(decoder_inputs)
-
-# 実験用
-#with tf.device('cpu:0'):
-model = UniversalTransformer(hparams, True)
-#parallel_model = multi_gpu_model(model, gpus=2)
-optimizer = tf.train.AdamOptimizer(model.learning_rate, beta1=0.9, beta2=0.98, epsilon=1e-09)
-model.load(optimizer)
-writer = tf.contrib.summary.create_file_writer(hparams['log_dir'])
-writer.set_as_default()
-model.fit(ds, optimizer, writer)
-
-a = tf.keras.layers.Input(shape=(hparams['batch_size'], hparams['max_length']))
-b = Transformer()()
-kerasmodel = tf.keras.Model(inputs=a, outputs=b)
+            # pondering 判断のための特徴を計算
+            pondering = self.pondering_layer(state)
+            pondering = tf.squeeze(pondering, axis=-1)
+            
+            # proceed act step
+            update_weights = act(pondering, halt_threshold)
+            
+            state = self.self_attention_wrapper(state, decoder_self_attention_bias)
+            state = self.enc_dec_attention_wrapper(state, encoder_outputs, attention_bias)
+            state = self.ffn_wrapper(state)
+            
+            # ここまでの state と weighted sum を取り、 previous_state を更新
+            new_state = (state * update_weights) + (previous_state * (1 - update_weights))
+            previous_state = new_state
+            
+        return self.output_norm(new_state), act.n_updates, act.remainders
 
 # eager
 def worker(hparams, gpu_id):
@@ -347,7 +428,7 @@ process_0.start()
 
 process_1.start()
 
-
+worker(hparams1, 1)
 
 
 
