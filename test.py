@@ -34,13 +34,13 @@ from datasource.sample_ds import SampleDataSource
 tf.enable_eager_execution()
 
 hparams = AttrDict()
-hparams.num_layers = 6
+hparams.num_layers = 4
 hparams.num_units = 512
 hparams.num_filter_units = hparams.num_units * 4
 hparams.num_heads = 8
 hparams.dropout_rate = 0.1
 hparams.max_length = 50
-hparams.batch_size = 64
+hparams.batch_size = 32
 hparams.learning_rate = 0.001
 hparams.warmup_steps = 4000
 hparams.num_epochs = 50
