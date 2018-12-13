@@ -39,18 +39,18 @@ tf.enable_eager_execution()
 
 hparams = AttrDict()
 #hparams.num_layers = 4
-hparams.num_units = 256
+hparams.num_units = 1024
 hparams.num_filter_units = hparams.num_units * 4
 hparams.num_heads = 8
 hparams.dropout_rate = 0.1
 hparams.max_length = 50
-hparams.batch_size = 32
+hparams.batch_size = 64
 hparams.learning_rate = 0.001
 hparams.warmup_steps = 4000
 hparams.num_epochs = 2
 hparams.vocab_size = 3278
 hparams.data_path = './data/'
-hparams.ckpt_path = './ckpt/aut/u{}/model.ckpt'.format(hparams.num_units)
+hparams.ckpt_path = './ckpt/aut/u{}_2/model.ckpt'.format(hparams.num_units)
 hparams.log_dir = './logs/aut/u{}_2'.format(hparams.num_units)
 hparams.act_max_step = 20
 hparams.act_epsilon = 0.01
